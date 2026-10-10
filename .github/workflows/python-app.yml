@@ -1,4 +1,9 @@
-# This workflow will install Python dependencies, run tests and lint with a single version of Python
+# Pirâmide de testes: cada camada só roda se a de baixo passou, e cada
+# arquivo de teste roda isolado no seu próprio job (matrix).
+#
+#   lint ─▶ unit (base) ─▶ component (meio) ─▶ integration (topo, manual)
+#                   └──────────────┴──▶ cobertura (junta tudo e exige 90%)
+#
 # For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python
 
 name: Python application
@@ -15,84 +20,146 @@ permissions:
   contents: read
 
 jobs:
-  build:
-
+  lint:
     runs-on: ubuntu-latest
-
     steps:
     - uses: actions/checkout@v4
-    - name: Set up Python 3.10
-      uses: actions/setup-python@v5
-      with:
-        python-version: "3.10"
-        cache: pip
-        cache-dependency-path: requirements*.txt
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements-dev.txt
+    - uses: ./.github/actions/preparar
     - name: Lint with flake8
       run: |
         # stop the build if there are Python syntax errors or undefined names
         flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
         # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
         flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
-    - name: Test with pytest
+
+  # ------------------------------------------------------------------------
+  # Base da pirâmide: muitos testes, rápidos, funções isoladas
+  # ------------------------------------------------------------------------
+  unit:
+    name: unit (${{ matrix.suite }})
+    needs: lint
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false  # uma suíte quebrada não esconde o resultado das outras
+      matrix:
+        suite: [ferramentas, contexto, prompts]
+    env:
+      COVERAGE_FILE: reports/.coverage.unit-${{ matrix.suite }}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: ./.github/actions/preparar
+    - name: Test ${{ matrix.suite }}
       # sem chave: os testes usam um cliente falso e nunca chamam a OpenAI
       run: |
-        pytest -v \
+        pytest -v -m unit tests/test_${{ matrix.suite }}.py \
           --junitxml=reports/junit.xml \
           --html=reports/testes.html --self-contained-html \
-          --cov=agent --cov-report=term-missing \
-          --cov-report=html:reports/cobertura \
-          --cov-report=xml:reports/coverage.xml \
-          --cov-fail-under=90
+          --cov=agent --cov-report=
     - name: Test summary
-      # always(): o resumo aparece mesmo quando algum teste falha
       if: always()
-      run: |
-        python .github/scripts/resumo_testes.py reports/junit.xml reports/coverage.xml
+      run: python .github/scripts/resumo_testes.py reports/junit.xml
     - name: Upload test reports
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: relatorios-testes
+        name: 1-unit-${{ matrix.suite }}
         path: reports/
+        include-hidden-files: true  # o .coverage.* é usado no job de cobertura
         retention-days: 30
 
+  # ------------------------------------------------------------------------
+  # Meio da pirâmide: o agente montado (loop + terminal) com cliente falso
+  # ------------------------------------------------------------------------
+  component:
+    name: component (${{ matrix.suite }})
+    needs: unit
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [loop, terminal]
+    env:
+      COVERAGE_FILE: reports/.coverage.component-${{ matrix.suite }}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: ./.github/actions/preparar
+    - name: Test ${{ matrix.suite }}
+      run: |
+        pytest -v -m component tests/test_${{ matrix.suite }}.py \
+          --junitxml=reports/junit.xml \
+          --html=reports/testes.html --self-contained-html \
+          --cov=agent --cov-report=
+    - name: Test summary
+      if: always()
+      run: python .github/scripts/resumo_testes.py reports/junit.xml
+    - name: Upload test reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: 2-component-${{ matrix.suite }}
+        path: reports/
+        include-hidden-files: true
+        retention-days: 30
+
+  # ------------------------------------------------------------------------
+  # Junta a cobertura de todas as suítes e aplica o mínimo de 90%
+  # ------------------------------------------------------------------------
+  cobertura:
+    needs: [unit, component]
+    if: always() && !cancelled()
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: ./.github/actions/preparar
+    - name: Download test reports
+      uses: actions/download-artifact@v4
+      with:
+        pattern: "[12]-*"
+        path: reports/
+    - name: Combine coverage
+      run: |
+        coverage combine $(find reports -name '.coverage.*')
+        coverage html -d reports/cobertura
+        coverage xml -o reports/coverage.xml
+        coverage report --show-missing --fail-under=90
+    - name: Pyramid summary
+      if: always()
+      run: python .github/scripts/resumo_testes.py reports/*/junit.xml reports/coverage.xml
+    - name: Upload coverage report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: cobertura
+        path: |
+          reports/cobertura/
+          reports/coverage.xml
+        retention-days: 30
+
+  # ------------------------------------------------------------------------
+  # Topo da pirâmide: poucos testes, lentos, API real
+  # ------------------------------------------------------------------------
   integration:
     # chama a API real (custa dinheiro): só quando disparado à mão
     if: github.event_name == 'workflow_dispatch'
-    needs: build
+    needs: component
     runs-on: ubuntu-latest
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-
     steps:
     - uses: actions/checkout@v4
-    - name: Set up Python 3.10
-      uses: actions/setup-python@v5
-      with:
-        python-version: "3.10"
-        cache: pip
-        cache-dependency-path: requirements*.txt
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements-dev.txt
+    - uses: ./.github/actions/preparar
     - name: Integration test with pytest
       run: |
-        pytest -v -m integration \
+        pytest -v -m integration tests/test_integracao.py \
           --junitxml=reports/junit.xml \
           --html=reports/integracao.html --self-contained-html
     - name: Test summary
       if: always()
-      run: |
-        python .github/scripts/resumo_testes.py reports/junit.xml
+      run: python .github/scripts/resumo_testes.py reports/junit.xml
     - name: Upload test reports
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: relatorios-integracao
+        name: 3-integration
         path: reports/
         retention-days: 30

@@ -5,6 +5,8 @@ from openai import OpenAI
 
 import agent
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def arquivos(tmp_path, monkeypatch):

@@ -1,0 +1,17 @@
+name: Preparar ambiente Python
+description: Instala o Python 3.10 e as dependências de desenvolvimento (com cache do pip)
+
+runs:
+  using: composite
+  steps:
+  - name: Set up Python 3.10
+    uses: actions/setup-python@v5
+    with:
+      python-version: "3.10"
+      cache: pip
+      cache-dependency-path: requirements*.txt
+  - name: Install dependencies
+    shell: bash
+    run: |
+      python -m pip install --upgrade pip
+      pip install -r requirements-dev.txt

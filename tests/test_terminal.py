@@ -4,6 +4,8 @@ import pytest
 
 import agent
 
+pytestmark = pytest.mark.component
+
 
 @pytest.fixture
 def teclado(monkeypatch):

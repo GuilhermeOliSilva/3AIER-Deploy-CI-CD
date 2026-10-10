@@ -7,6 +7,8 @@ import pytest
 
 import agent
 
+pytestmark = pytest.mark.unit
+
 
 # --------------------------------------------------------------------------
 # somar

@@ -6,6 +6,8 @@ import pytest
 
 import agent
 
+pytestmark = pytest.mark.unit
+
 PERFIS = sorted(agent.RAIZ.glob("agent*.md"))
 SECOES_OBRIGATORIAS = ["## Identidade", "## Regras", "## Ferramentas disponíveis"]
 

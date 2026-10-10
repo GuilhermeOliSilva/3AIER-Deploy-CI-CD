@@ -2,8 +2,12 @@
 
 import json
 
+import pytest
+
 import agent
 from conftest import msg_ferramentas, msg_texto
+
+pytestmark = pytest.mark.component
 
 
 def _conversa():
