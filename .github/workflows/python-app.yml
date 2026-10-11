@@ -1,8 +1,8 @@
-# Pirâmide de testes: cada camada só roda se a de baixo passou, e cada
-# arquivo de teste roda isolado no seu próprio job (matrix).
+# Pirâmide de testes: cada arquivo de teste tem o seu próprio job, e cada
+# camada só roda se a de baixo passou.
 #
 #   lint ─▶ unit (base) ─▶ component (meio) ─▶ integration (topo, manual)
-#                   └──────────────┴──▶ cobertura (junta tudo e exige 90%)
+#                 └──────────────┴──▶ cobertura (junta tudo e exige 90%)
 #
 # For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python
 
@@ -21,6 +21,7 @@ permissions:
 
 jobs:
   lint:
+    name: Lint
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -32,26 +33,23 @@ jobs:
         # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
         flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
-  # ------------------------------------------------------------------------
-  # Base da pirâmide: muitos testes, rápidos, funções isoladas
-  # ------------------------------------------------------------------------
-  unit:
-    name: unit (${{ matrix.suite }})
+  # ========================================================================
+  # 1. BASE DA PIRÂMIDE — testes unitários: funções isoladas, rápidos
+  #    (sem chave: nenhum teste daqui chama a OpenAI)
+  # ========================================================================
+
+  unit-ferramentas:
+    name: "Unit: ferramentas"
     needs: lint
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false  # uma suíte quebrada não esconde o resultado das outras
-      matrix:
-        suite: [ferramentas, contexto, prompts]
     env:
-      COVERAGE_FILE: reports/.coverage.unit-${{ matrix.suite }}
+      COVERAGE_FILE: reports/.coverage.unit-ferramentas
     steps:
     - uses: actions/checkout@v4
     - uses: ./.github/actions/preparar
-    - name: Test ${{ matrix.suite }}
-      # sem chave: os testes usam um cliente falso e nunca chamam a OpenAI
+    - name: Test ferramentas
       run: |
-        pytest -v -m unit tests/test_${{ matrix.suite }}.py \
+        pytest -v -m unit tests/test_ferramentas.py \
           --junitxml=reports/junit.xml \
           --html=reports/testes.html --self-contained-html \
           --cov=agent --cov-report=
@@ -62,30 +60,23 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: 1-unit-${{ matrix.suite }}
+        name: 1-unit-ferramentas
         path: reports/
         include-hidden-files: true  # o .coverage.* é usado no job de cobertura
         retention-days: 30
 
-  # ------------------------------------------------------------------------
-  # Meio da pirâmide: o agente montado (loop + terminal) com cliente falso
-  # ------------------------------------------------------------------------
-  component:
-    name: component (${{ matrix.suite }})
-    needs: unit
+  unit-contexto:
+    name: "Unit: contexto"
+    needs: lint
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        suite: [loop, terminal]
     env:
-      COVERAGE_FILE: reports/.coverage.component-${{ matrix.suite }}
+      COVERAGE_FILE: reports/.coverage.unit-contexto
     steps:
     - uses: actions/checkout@v4
     - uses: ./.github/actions/preparar
-    - name: Test ${{ matrix.suite }}
+    - name: Test contexto
       run: |
-        pytest -v -m component tests/test_${{ matrix.suite }}.py \
+        pytest -v -m unit tests/test_contexto.py \
           --junitxml=reports/junit.xml \
           --html=reports/testes.html --self-contained-html \
           --cov=agent --cov-report=
@@ -96,16 +87,104 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: 2-component-${{ matrix.suite }}
+        name: 1-unit-contexto
         path: reports/
         include-hidden-files: true
         retention-days: 30
 
-  # ------------------------------------------------------------------------
-  # Junta a cobertura de todas as suítes e aplica o mínimo de 90%
-  # ------------------------------------------------------------------------
+  unit-prompts:
+    name: "Unit: prompts"
+    needs: lint
+    runs-on: ubuntu-latest
+    env:
+      COVERAGE_FILE: reports/.coverage.unit-prompts
+    steps:
+    - uses: actions/checkout@v4
+    - uses: ./.github/actions/preparar
+    - name: Test prompts
+      run: |
+        pytest -v -m unit tests/test_prompts.py \
+          --junitxml=reports/junit.xml \
+          --html=reports/testes.html --self-contained-html \
+          --cov=agent --cov-report=
+    - name: Test summary
+      if: always()
+      run: python .github/scripts/resumo_testes.py reports/junit.xml
+    - name: Upload test reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: 1-unit-prompts
+        path: reports/
+        include-hidden-files: true
+        retention-days: 30
+
+  # ========================================================================
+  # 2. MEIO DA PIRÂMIDE — testes de componente: o agente montado
+  #    (loop e terminal) com o cliente falso. Só roda se TODOS os unit passaram.
+  # ========================================================================
+
+  component-loop:
+    name: "Component: loop"
+    needs: [unit-ferramentas, unit-contexto, unit-prompts]
+    runs-on: ubuntu-latest
+    env:
+      COVERAGE_FILE: reports/.coverage.component-loop
+    steps:
+    - uses: actions/checkout@v4
+    - uses: ./.github/actions/preparar
+    - name: Test loop
+      run: |
+        pytest -v -m component tests/test_loop.py \
+          --junitxml=reports/junit.xml \
+          --html=reports/testes.html --self-contained-html \
+          --cov=agent --cov-report=
+    - name: Test summary
+      if: always()
+      run: python .github/scripts/resumo_testes.py reports/junit.xml
+    - name: Upload test reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: 2-component-loop
+        path: reports/
+        include-hidden-files: true
+        retention-days: 30
+
+  component-terminal:
+    name: "Component: terminal"
+    needs: [unit-ferramentas, unit-contexto, unit-prompts]
+    runs-on: ubuntu-latest
+    env:
+      COVERAGE_FILE: reports/.coverage.component-terminal
+    steps:
+    - uses: actions/checkout@v4
+    - uses: ./.github/actions/preparar
+    - name: Test terminal
+      run: |
+        pytest -v -m component tests/test_terminal.py \
+          --junitxml=reports/junit.xml \
+          --html=reports/testes.html --self-contained-html \
+          --cov=agent --cov-report=
+    - name: Test summary
+      if: always()
+      run: python .github/scripts/resumo_testes.py reports/junit.xml
+    - name: Upload test reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: 2-component-terminal
+        path: reports/
+        include-hidden-files: true
+        retention-days: 30
+
+  # ========================================================================
+  # COBERTURA — junta a cobertura de todos os jobs e exige no mínimo 90%
+  # ========================================================================
+
   cobertura:
-    needs: [unit, component]
+    name: Cobertura
+    needs: [unit-ferramentas, unit-contexto, unit-prompts, component-loop, component-terminal]
     if: always() && !cancelled()
     runs-on: ubuntu-latest
     steps:
@@ -135,13 +214,15 @@ jobs:
           reports/coverage.xml
         retention-days: 30
 
-  # ------------------------------------------------------------------------
-  # Topo da pirâmide: poucos testes, lentos, API real
-  # ------------------------------------------------------------------------
+  # ========================================================================
+  # 3. TOPO DA PIRÂMIDE — integração com a API real da OpenAI
+  #    Custa dinheiro: só roda quando disparado à mão (workflow_dispatch)
+  # ========================================================================
+
   integration:
-    # chama a API real (custa dinheiro): só quando disparado à mão
+    name: "Integration: OpenAI"
     if: github.event_name == 'workflow_dispatch'
-    needs: component
+    needs: [component-loop, component-terminal]
     runs-on: ubuntu-latest
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
